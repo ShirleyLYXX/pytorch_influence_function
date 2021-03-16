@@ -29,6 +29,7 @@ if __name__ == "__main__":
     config['test_sample_id'] = 6558
     config['calc_method'] = 'img_wise_single'
     config['test_sample_num'] = 1
+    config['save_suffix'] = "p2"
 
     model = load_model("output/small_mnist_all_cnn_c_99999.pth")
     trainloader, testloader = load_data()

@@ -45,19 +45,20 @@ def calc_s_test(model, test_loader, train_loader, save=False, gpu=-1,
         logging.info("ATTENTION: not saving s_test files.")
 
     s_tests = []
+    all_params = [p for p in model.parameters() if p.requires_grad ]
+    print('Norm of params %d: %s' % (len(all_params), np.linalg.norm(concate_list_to_array(all_params))))
+
     for i in range(start, len(test_loader.dataset)):
         z_test, t_test = test_loader.dataset[i]
         z_test = test_loader.collate_fn([z_test])
         t_test = test_loader.collate_fn([t_test])
 
-        s_test_vec = calc_s_test_single(model, z_test, t_test, train_loader,
+        s_test_vec = calc_s_test_single(model, all_params, z_test, t_test, train_loader,
                                         gpu, damp, scale, recursion_depth, r)
 
         if save:
             s_test_vec = [s.cpu() for s in s_test_vec]
-            torch.save(
-                s_test_vec,
-                save.joinpath(f"{i}_recdep{recursion_depth}_r{r}.s_test"))
+            torch.save(s_test_vec, save.joinpath(f"{i}_recdep{recursion_depth}_r{r}.s_test"))
         else:
             s_tests.append(s_test_vec)
         display_progress(
@@ -66,7 +67,7 @@ def calc_s_test(model, test_loader, train_loader, save=False, gpu=-1,
     return s_tests, save
 
 
-def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
+def calc_s_test_single(model, all_params, z_test, t_test, train_loader, gpu=-1,
                        damp=0.01, scale=25, recursion_depth=5000, r=1):
     """Calculates s_test for a single test image taking into account the whole
     training dataset. s_test = invHessian * nabla(Loss(test_img, model params))
@@ -91,9 +92,6 @@ def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
     ###############################
     # Reference to original git
     ###############################
-    all_params = [p for p in model.parameters() if p.requires_grad ][-2:]
-    print('Norm of params: %s' % np.linalg.norm(concate_list_to_array(all_params)))
-
     v = grad_z(z_test, t_test, model, all_params, gpu)
     print('Norm of test gradient: %s' % np.linalg.norm(concate_list_to_array(v)))
     
@@ -110,22 +108,19 @@ def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
         display_progress("Averaging r-times: ", i, r)
 
     s_test_vec = [a/r for a in s_test_vec]
-    return s_test_vec, all_params
+    return s_test_vec
 
 
-def calc_s_test_single_cg(model, z_test, t_test, train_loader, gpu=-1, damp=0.01):
+def calc_s_test_single_cg(model, all_params, z_test, t_test, train_loader, gpu=-1, damp=0.01):
     ###############################
     # Reference to pangwei/tf1.0
     ###############################
-    all_params = [p for p in model.parameters() if p.requires_grad ][-2:]
-    print('Norm of params: %s' % np.linalg.norm(concate_list_to_array(all_params)))
-
     v = grad_z(z_test, t_test, model, all_params, gpu)
     print('Norm of test gradient: %s' % np.linalg.norm(concate_list_to_array(v)))
     
     s_test_vec = get_inverse_hvp_cg(v, model, train_loader, all_params, gpu=gpu, damp=damp)
 
-    return s_test_vec, all_params
+    return s_test_vec
 
 
 def calc_grad_z(model, train_loader, save_pth=False, gpu=-1, start=0):
@@ -334,11 +329,15 @@ def calc_influence_single(model, method, train_loader, test_loader, test_id_num,
         z_test, t_test = test_loader.dataset[test_id_num]
         z_test = test_loader.collate_fn([z_test])
         t_test = test_loader.collate_fn([t_test])
+
+        all_params = [p for p in model.parameters() if p.requires_grad ][-2:]
+        print('Norm of params %d: %s' % (len(all_params), np.linalg.norm(concate_list_to_array(all_params))))
+
         if method == 'cg':
-            s_test_vec, all_params = calc_s_test_single_cg(model, z_test, t_test, train_loader,
+            s_test_vec = calc_s_test_single_cg(model, all_params, z_test, t_test, train_loader,
                                         gpu, damp=damp)
         elif method == 'lissa':
-            s_test_vec, all_params = calc_s_test_single(model, z_test, t_test, train_loader,
+            s_test_vec = calc_s_test_single(model, all_params, z_test, t_test, train_loader,
                                             gpu, damp=damp, scale=scale, recursion_depth=recursion_depth,
                                             r=r)
         else:
@@ -583,8 +582,9 @@ def calc_img_wise_on_single(config, model, method, train_loader, test_loader):
     outdir.mkdir(exist_ok=True, parents=True)
 
     test_start_index = test_sample_id
+    save_suffix = config["save_suffix"]
     logging.info(f"Running on: {test_start_index} single image.")
-    influences_meta_fn = f"influences_results_meta_{test_start_index}-" \
+    influences_meta_fn = f"influences_results_meta_{method}_{save_suffix}_{test_start_index}-" \
                          f"{test_sample_num}.json"
     influences_meta_path = outdir.joinpath(influences_meta_fn)
     save_json(influences_meta, influences_meta_path)
@@ -625,7 +625,8 @@ def calc_img_wise_on_single(config, model, method, train_loader, test_loader):
     for idx in helpful[:3]: 
         logging.info(infl[idx])
 
-    influences_path = outdir.joinpath(f"influence_results_single_{method}_{test_start_index}_"
+    influences_path = outdir.joinpath(f"influence_results_single_{method}_{save_suffix}_{test_start_index}_"
                                       f"{test_sample_num}.json")
     save_json(influences, influences_path)
+    logging.info("Saved influence_results_single_%s_%s_%d_%d.json" % (method, save_suffix, test_start_index, test_sample_num))
     return influences

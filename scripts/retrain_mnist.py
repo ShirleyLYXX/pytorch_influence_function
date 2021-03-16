@@ -152,8 +152,9 @@ if __name__ == '__main__':
     model_path = "output/small_mnist_all_cnn_c_99999.pth"
     frozen = True
 
+    json_suffix = "cg_p2_%d_1.json" % test_id
     import json
-    dict_ = json.load(open("outdir/influence_results_single_%d_1.json" % test_id))
+    dict_ = json.load(open("outdir/influence_results_single_%s" % json_suffix))
     predicted_loss_diffs = np.array(dict_[str(test_id)]['influence'])
     num_to_remove = 100
     indices_to_remove = np.argsort(np.abs(predicted_loss_diffs))[-num_to_remove:]
@@ -209,7 +210,7 @@ if __name__ == '__main__':
         print('Predicted difference in loss (influence): %s' % predicted_loss_diffs[counter])
 
     np.savez(
-        'outdir/loss_diffs_small_mnist_all_cnn_c_99999_retrain-100-finetune-p2.npz',
+        'outdir/loss_diffs_small_mnist_all_cnn_c_99999_%s_retrain-100-finetune-p2.npz' % json_suffix,
         actual_loss_diffs=actual_loss_diffs, 
         predicted_loss_diffs=predicted_loss_diffs)
     

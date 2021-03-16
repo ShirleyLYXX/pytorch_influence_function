@@ -251,6 +251,6 @@ def get_inverse_hvp_cg(v, model, z_loader, params, gpu=-1, damp=0.01):
 
     fmin_results = vect_to_list(fmin_results, params)
     fmin_results = [torch.from_numpy(j) for j in fmin_results]
-    fmin_results = [torch.reshape(v[i], params[i].size()) for i in range(len(fmin_results))]
+    fmin_results = [torch.reshape(fmin_results[i], params[i].size()) for i in range(len(fmin_results))]
     fmin_results = [j.cuda() for j in fmin_results]
     return fmin_results
