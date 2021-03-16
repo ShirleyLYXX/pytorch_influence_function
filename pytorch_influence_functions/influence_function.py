@@ -5,6 +5,7 @@ from torch.autograd import grad
 from pytorch_influence_functions.utils import display_progress, concate_list_to_array
 import numpy as np
 import torch.nn as nn
+from scipy.optimize import fmin_ncg
 
 
 def s_test(v, model, params, z_loader, gpu=-1, damp=0.01, scale=25.0,
@@ -152,3 +153,104 @@ def hvp(y, w, v):
     # return_grads = grad(norm, w)
 
     return return_grads
+
+
+def minibatch_hessian_vector_val(v, model, z_loader, params, gpu=-1, damp=0.01):
+    """
+    Reference to pangwei/tf1.1
+    Arguments:
+        v: test loss
+        model: torch NN, model used to evaluate the dataset
+        z_loader: torch Dataloader, can load the training dataset
+        params: model params for caculating Hessian
+
+    Returns:
+        h_estimate: list of torch tensors, s_test"""
+    num_iter = len(z_loader)
+    hessian_vector_val = None
+
+    v = [torch.from_numpy(j) for j in v]
+    v = [torch.reshape(v[i], params[i].size()) for i in range(len(v))]
+    v = [j.cuda() for j in v]
+    for batch_idx, sample_batched in enumerate(z_loader):
+        x = sample_batched[0]
+        t = sample_batched[1]
+
+        model.eval()
+        if gpu >= 0:
+            x, t = x.cuda(), t.cuda()
+        y = model(x)
+        loss = calc_loss(y, t)
+        hessian_vector_val_tmp = hvp(loss, params, v)
+
+        if hessian_vector_val is None:
+            hessian_vector_val = [b / float(num_iter) for b in hessian_vector_val_tmp]
+        else:
+            hessian_vector_val = [a + (b / float(num_iter)) for (a,b) in zip(hessian_vector_val, hessian_vector_val_tmp)]
+
+    hessian_vector_val = [a + damp * b for (a,b) in zip(hessian_vector_val, v)]
+    hessian_vector_val = [j.detach().cpu().numpy().ravel() for j in hessian_vector_val]
+
+    return hessian_vector_val
+
+
+def vect_to_list(vect, params):
+    start = 0
+    vect_list = []
+    for i in range(len(params)):
+        end = len(params[i].detach().cpu().numpy().flatten()) + start
+        vect_list.append(np.array(vect[start:end]))
+        start = end
+    
+    return vect_list
+
+
+def get_fmin_loss_fn(v):
+
+    def get_fmin_loss(x, model, z_loader, params, gpu, damp):
+        hessian_vector_val = minibatch_hessian_vector_val(vect_to_list(x, params), 
+                                                        model, z_loader, params, gpu, damp)
+
+        return 0.5 * np.dot(np.concatenate(hessian_vector_val), x) - np.dot(np.concatenate(v), x)
+    
+    return get_fmin_loss
+
+
+def get_fmin_grad_fn(v):
+
+    def get_fmin_grad(x, model, z_loader, params, gpu, damp):
+        hessian_vector_val = minibatch_hessian_vector_val(vect_to_list(x, params), 
+                                                        model, z_loader, params, gpu, damp)
+
+        return np.concatenate(hessian_vector_val) - np.concatenate(v)
+
+    return get_fmin_grad
+
+
+def get_fmin_hvp(x, p, model, z_loader, params, gpu, damp):
+    hessian_vector_val = minibatch_hessian_vector_val(vect_to_list(p, params), 
+                                                        model, z_loader, params, gpu, damp)
+
+    return np.concatenate(hessian_vector_val)
+
+
+def get_inverse_hvp_cg(v, model, z_loader, params, gpu=-1, damp=0.01):
+    v = [i.detach().cpu().numpy().ravel() for i in v]
+    fmin_loss_fn = get_fmin_loss_fn(v)
+    fmin_grad_fn = get_fmin_grad_fn(v)
+    
+    fmin_results = fmin_ncg( 
+        f=fmin_loss_fn,
+        x0=np.concatenate(v),
+        fprime=fmin_grad_fn,
+        fhess_p=get_fmin_hvp,
+        #callback=cg_callback,
+        avextol=1e-8,
+        maxiter=100,
+        args=(model, z_loader, params, gpu, damp))
+
+    fmin_results = vect_to_list(fmin_results, params)
+    fmin_results = [torch.from_numpy(j) for j in fmin_results]
+    fmin_results = [torch.reshape(v[i], params[i].size()) for i in range(len(fmin_results))]
+    fmin_results = [j.cuda() for j in fmin_results]
+    return fmin_results

@@ -8,7 +8,7 @@ import copy
 import logging
 
 from pathlib import Path
-from pytorch_influence_functions.influence_function import s_test, grad_z
+from pytorch_influence_functions.influence_function import s_test, grad_z, get_inverse_hvp_cg
 from pytorch_influence_functions.utils import save_json, display_progress, concate_list_to_array
 
 
@@ -110,6 +110,21 @@ def calc_s_test_single(model, z_test, t_test, train_loader, gpu=-1,
         display_progress("Averaging r-times: ", i, r)
 
     s_test_vec = [a/r for a in s_test_vec]
+    return s_test_vec, all_params
+
+
+def calc_s_test_single_cg(model, z_test, t_test, train_loader, gpu=-1, damp=0.01):
+    ###############################
+    # Reference to pangwei/tf1.0
+    ###############################
+    all_params = [p for p in model.parameters() if p.requires_grad ][-2:]
+    print('Norm of params: %s' % np.linalg.norm(concate_list_to_array(all_params)))
+
+    v = grad_z(z_test, t_test, model, all_params, gpu)
+    print('Norm of test gradient: %s' % np.linalg.norm(concate_list_to_array(v)))
+    
+    s_test_vec = get_inverse_hvp_cg(v, model, train_loader, all_params, gpu=gpu, damp=damp)
+
     return s_test_vec, all_params
 
 
@@ -283,7 +298,7 @@ def calc_influence_function(train_dataset_size, grad_z_vecs=None,
     return influences, harmful.tolist(), helpful.tolist()
 
 
-def calc_influence_single(model, train_loader, test_loader, train_loader_1, test_id_num, gpu,
+def calc_influence_single(model, method, train_loader, test_loader, test_id_num, gpu,
                           damp, scale, recursion_depth, r, s_test_vec=None,
                           time_logging=False):
     """Calculates the influences of all training data points on a single
@@ -319,12 +334,18 @@ def calc_influence_single(model, train_loader, test_loader, train_loader_1, test
         z_test, t_test = test_loader.dataset[test_id_num]
         z_test = test_loader.collate_fn([z_test])
         t_test = test_loader.collate_fn([t_test])
-        s_test_vec, all_params = calc_s_test_single(model, z_test, t_test, train_loader,
-                                        gpu, damp=damp, scale=scale, recursion_depth=recursion_depth,
-                                        r=r)
+        if method == 'cg':
+            s_test_vec, all_params = calc_s_test_single_cg(model, z_test, t_test, train_loader,
+                                        gpu, damp=damp)
+        elif method == 'lissa':
+            s_test_vec, all_params = calc_s_test_single(model, z_test, t_test, train_loader,
+                                            gpu, damp=damp, scale=scale, recursion_depth=recursion_depth,
+                                            r=r)
+        else:
+            raise("Error! no method %s" % method)
 
     # Calculate the influence function
-    train_dataset_size = len(train_loader_1.dataset)
+    train_dataset_size = len(train_loader.dataset)
     influences = []
     for i in range(train_dataset_size):
         z, t = train_loader.dataset[i]
@@ -549,7 +570,7 @@ def calc_all_grad_then_test(config, model, train_loader, test_loader):
     save_json(influence_results, influences_path)
 
 
-def calc_img_wise_on_single(config, model, train_loader, test_loader, train_loader_1):
+def calc_img_wise_on_single(config, model, method, train_loader, test_loader):
     """Calculates the influence function one test point at a time. Calcualtes
     the `s_test` and `grad_z` values on the fly and discards them afterwards.
     
@@ -562,7 +583,7 @@ def calc_img_wise_on_single(config, model, train_loader, test_loader, train_load
     outdir.mkdir(exist_ok=True, parents=True)
 
     test_start_index = test_sample_id
-    logging.info(f"Running on: {test_sample_num} single image.")
+    logging.info(f"Running on: {test_start_index} single image.")
     influences_meta_fn = f"influences_results_meta_{test_start_index}-" \
                          f"{test_sample_num}.json"
     influences_meta_path = outdir.joinpath(influences_meta_fn)
@@ -574,7 +595,7 @@ def calc_img_wise_on_single(config, model, train_loader, test_loader, train_load
     start_time = time.time()
     i = test_sample_id
     influence, harmful, helpful, _ = calc_influence_single(
-        model, train_loader, test_loader, train_loader_1, test_id_num=i, gpu=config['gpu'],
+        model, method, train_loader, test_loader, test_id_num=i, gpu=config['gpu'],
         damp=config['damp'], scale=config['scale'],
         recursion_depth=config['recursion_depth'], r=config['r_averaging'])
     end_time = time.time()
@@ -604,7 +625,7 @@ def calc_img_wise_on_single(config, model, train_loader, test_loader, train_load
     for idx in helpful[:3]: 
         logging.info(infl[idx])
 
-    influences_path = outdir.joinpath(f"influence_results_single_{test_start_index}_"
+    influences_path = outdir.joinpath(f"influence_results_single_{method}_{test_start_index}_"
                                       f"{test_sample_num}.json")
     save_json(influences, influences_path)
     return influences

@@ -34,6 +34,6 @@ if __name__ == "__main__":
     trainloader, testloader = load_data()
 
     ptif.init_logging('logfile.log')
-    ptif.calc_img_wise_on_single(config, model, trainloader, testloader)
+    ptif.calc_img_wise_on_single(config, model, 'cg', trainloader, testloader)
 
 
