@@ -2,11 +2,13 @@
 
 import torch
 from torch.autograd import grad
-from pytorch_influence_functions.utils import display_progress
+from pytorch_influence_functions.utils import display_progress, concate_list_to_array
+import numpy as np
+import torch.nn as nn
 
 
-def s_test(z_test, t_test, model, z_loader, gpu=-1, damp=0.01, scale=25.0,
-           recursion_depth=5000):
+def s_test(v, model, params, z_loader, gpu=-1, damp=0.01, scale=25.0,
+           recursion_depth=5000, print_iter=100):
     """s_test can be precomputed for each test point of interest, and then
     multiplied with grad_z to get the desired value for each training point.
     Here, strochastic estimation is used to calculate s_test. s_test is the
@@ -25,7 +27,6 @@ def s_test(z_test, t_test, model, z_loader, gpu=-1, damp=0.01, scale=25.0,
 
     Returns:
         h_estimate: list of torch tensors, s_test"""
-    v = grad_z(z_test, t_test, model, gpu)
     h_estimate = v.copy()
 
     ################################
@@ -33,24 +34,29 @@ def s_test(z_test, t_test, model, z_loader, gpu=-1, damp=0.01, scale=25.0,
     # once h_estimate stabilises
     ################################
     for i in range(recursion_depth):
-        # take just one random sample from training dataset
-        # easiest way to just use the DataLoader once, break at the end of loop
         #########################
-        # TODO: do x, t really have to be chosen RANDOMLY from the train set?
+        # Done: do x, t really have to be chosen from the train sest
         #########################
-        for x, t in z_loader:
-            if gpu >= 0:
-                x, t = x.cuda(), t.cuda()
-            y = model(x)
-            loss = calc_loss(y, t)
-            params = [ p for p in model.parameters() if p.requires_grad ]
-            hv = hvp(loss, params, h_estimate)
-            # Recursively caclulate h_estimate
-            h_estimate = [
-                _v + (1 - damp) * _h_e - _hv / scale
-                for _v, _h_e, _hv in zip(v, h_estimate, hv)]
-            break
-        display_progress("Calc. s_test recursions: ", i, recursion_depth)
+        x, t = z_loader.dataset[i]
+        x = z_loader.collate_fn([x])
+        t = z_loader.collate_fn([t])
+
+        model.eval()
+        if gpu >= 0:
+            x, t = x.cuda(), t.cuda()
+        y = model(x)
+        loss = calc_loss(y, t)
+        hv = hvp(loss, params, h_estimate)
+        # Recursively caclulate h_estimate
+        h_estimate = [
+            _v + (1 - damp) * _h_e - _hv / scale
+            for _v, _h_e, _hv in zip(v, h_estimate, hv)]
+        # display_progress("Calc. s_test recursions: ", i, recursion_depth)
+        # Caculate norm of params
+        if (i % print_iter == 0) or (i == recursion_depth - 1):
+            print("Recursion at depth %s: norm is %.8lf" % (i,
+                    np.linalg.norm(concate_list_to_array(h_estimate))))
+    
     return h_estimate
 
 
@@ -67,13 +73,15 @@ def calc_loss(y, t):
     # if dim == [0, 1, 3] then dim=0; else dim=1
     ####################
     # y = torch.nn.functional.log_softmax(y, dim=0)
-    y = torch.nn.functional.log_softmax(y)
-    loss = torch.nn.functional.nll_loss(
-        y, t, weight=None, reduction='mean')
+    criterion = nn.CrossEntropyLoss()
+    loss = criterion(y, t)
+    # y = torch.nn.functional.log_softmax(y)
+    # loss = torch.nn.functional.nll_loss(
+    #     y, t, weight=None, reduction='mean')
     return loss
 
 
-def grad_z(z, t, model, gpu=-1):
+def grad_z(z, t, model, params, gpu=-1):
     """Calculates the gradient z. One grad_z should be computed for each
     training sample.
 
@@ -94,8 +102,8 @@ def grad_z(z, t, model, gpu=-1):
     y = model(z)
     loss = calc_loss(y, t)
     # Compute sum of gradients from model parameters to loss
-    params = [ p for p in model.parameters() if p.requires_grad ]
-    return list(grad(loss, params, create_graph=True))
+    # params = [ p for p in model.parameters() if p.requires_grad ][-2:] # only for cls
+    return list(grad(loss, params, create_graph=False))
 
 
 def hvp(y, w, v):
@@ -121,14 +129,26 @@ def hvp(y, w, v):
         raise(ValueError("w and v must have the same length."))
 
     # First backprop
-    first_grads = grad(y, w, retain_graph=True, create_graph=True)
+    first_grads = grad(outputs=y, inputs=w, create_graph=True, retain_graph=True)
 
     # Elementwise products
     elemwise_products = 0
     for grad_elem, v_elem in zip(first_grads, v):
         elemwise_products += torch.sum(grad_elem * v_elem)
 
+    # elemwise_products = [
+    #     grad_elem.mul(v_elem)
+    #     for grad_elem, v_elem in zip(first_grads, v)
+    # ]
+
     # Second backprop
-    return_grads = grad(elemwise_products, w, create_graph=True)
+    return_grads = grad(elemwise_products, w, create_graph=False)
+
+    # norm = 0
+    # for ele_ in elemwise_products:
+    #     norm += ele_.pow(2).sum()
+    # norm = norm.sqrt()
+    
+    # return_grads = grad(norm, w)
 
     return return_grads

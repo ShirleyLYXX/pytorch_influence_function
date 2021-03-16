@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime as dt
+import numpy as np
 
 
 def save_json(json_obj, json_path, append_if_exists=False,
@@ -137,3 +138,10 @@ def get_default_config():
     }
 
     return config
+
+def concate_list_to_array(tensors_list):
+    items = []
+    for j in range(len(tensors_list)):
+        items.extend(tensors_list[j].detach().cpu().numpy().ravel())
+    return np.array(items)
+

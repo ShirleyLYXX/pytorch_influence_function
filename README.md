@@ -269,3 +269,4 @@ prediction outcome of the processed test samples.
 * [ ] integrate myPy type annotations (static type checking)
 * [ ] Use multiprocessing to calc the influence
 * [ ] use `r"doc"` docstrings like pytorch
+# pytorch_influence_function
